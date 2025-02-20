@@ -3,12 +3,12 @@ import os
 import random
 from collections import namedtuple, deque
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch
 from torch.optim import Adam
 from torch.nn import Parameter
-import tensorflow as tf
+from torch.utils.tensorboard import SummaryWriter
 from network import Actor, Critic
 
 torch.manual_seed(19971124)
@@ -21,10 +21,13 @@ torch.autograd.set_detect_anomaly(True)
 
 if torch.cuda.device_count() > 0:
     print("RUNNING ON GPU")
-    DEVICE = torch.device('cuda')
+    DEVICE = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    print("Running on MPS")
+    DEVICE = torch.device("mps")
 else:
     print("RUNNING ON CPU")
-    DEVICE = torch.device('cpu')
+    DEVICE = torch.device("cpu")
 
 
 class SAC:
@@ -50,10 +53,14 @@ class SAC:
         self.target_critic2 = Critic(n_states=n_states, n_actions=n_actions).to(DEVICE)
 
         # make the target critics start off same as the main networks
-        for target_param, local_param in zip(self.target_critic.parameters(), self.critic.parameters()):
+        for target_param, local_param in zip(
+            self.target_critic.parameters(), self.critic.parameters()
+        ):
             target_param.data.copy_(local_param)
 
-        for target_param, local_param in zip(self.target_critic2.parameters(), self.critic2.parameters()):
+        for target_param, local_param in zip(
+            self.target_critic2.parameters(), self.critic2.parameters()
+        ):
             target_param.data.copy_(local_param)
 
         # temperature variable
@@ -77,7 +84,9 @@ class SAC:
         # TODO: move code from main train() function
         return
 
-    def train_critic(self, s_currs, a_currs, r, s_nexts, dones, a_nexts, log_action_probs_next):
+    def train_critic(
+        self, s_currs, a_currs, r, s_nexts, dones, a_nexts, log_action_probs_next
+    ):
         # TODO: move code from main train() function
         return
 
@@ -95,7 +104,13 @@ class SAC:
             s_nexts[batch] = x_batch[batch].s_next
             dones[batch] = x_batch[batch].done
         dones = dones.float()
-        return s_currs.to(DEVICE), a_currs.to(DEVICE), r.to(DEVICE), s_nexts.to(DEVICE), dones.to(DEVICE)
+        return (
+            s_currs.to(DEVICE),
+            a_currs.to(DEVICE),
+            r.to(DEVICE),
+            s_nexts.to(DEVICE),
+            dones.to(DEVICE),
+        )
 
     def train(self, x_batch):
         s_currs, a_currs, r, s_nexts, dones = self.process_batch(x_batch=x_batch)
@@ -120,17 +135,23 @@ class SAC:
         loss2.backward()
         self.optim_critic_2.step()
 
-        sample_action, log_action_probs = self.actor.get_action(state=s_currs, train=True)
+        sample_action, log_action_probs = self.actor.get_action(
+            state=s_currs, train=True
+        )
         q_values_new = self.critic(s_currs, sample_action)
         q_values_new_2 = self.critic2(s_currs, sample_action)
-        loss_actor = (self.alpha * log_action_probs) - torch.min(q_values_new, q_values_new_2)
+        loss_actor = (self.alpha * log_action_probs) - torch.min(
+            q_values_new, q_values_new_2
+        )
 
         loss_actor = torch.mean(loss_actor)
         self.optim_actor.zero_grad()
         loss_actor.backward()
         self.optim_actor.step()
 
-        alpha_loss = torch.mean((-1 * torch.exp(self.log_alpha)) * (log_action_probs.detach() + self.H))
+        alpha_loss = torch.mean(
+            (-1 * torch.exp(self.log_alpha)) * (log_action_probs.detach() + self.H)
+        )
         self.optim_alpha.zero_grad()
         alpha_loss.backward()
         self.optim_alpha.step()
@@ -139,25 +160,32 @@ class SAC:
         return
 
     def update_weights(self):
-        for target_param, local_param in zip(self.target_critic.parameters(), self.critic.parameters()):
-            target_param.data.copy_(self.Tau * local_param.data + (1.0 - self.Tau) * target_param.data)
+        for target_param, local_param in zip(
+            self.target_critic.parameters(), self.critic.parameters()
+        ):
+            target_param.data.copy_(
+                self.Tau * local_param.data + (1.0 - self.Tau) * target_param.data
+            )
 
-        for target_param, local_param in zip(self.target_critic2.parameters(), self.critic2.parameters()):
-            target_param.data.copy_(self.Tau * local_param.data + (1.0 - self.Tau) * target_param.data)
+        for target_param, local_param in zip(
+            self.target_critic2.parameters(), self.critic2.parameters()
+        ):
+            target_param.data.copy_(
+                self.Tau * local_param.data + (1.0 - self.Tau) * target_param.data
+            )
 
 
 def main(episodes, exp_name):
     logdir = os.path.join("logs", exp_name)
     os.makedirs(logdir, exist_ok=True)
-    writer = tf.summary.create_file_writer(logdir)
-    env = gym.make('LunarLanderContinuous-v2')
-    # env = gym.make('MountainCarContinuous-v0')
+    writer = SummaryWriter(logdir)
+    env = gym.make("LunarLander-v3", render_mode="human", continuous=True)
     n_states = env.observation_space.shape[0]  # shape returns a tuple
     n_actions = env.action_space.shape[0]
     agent = SAC(n_states=n_states, n_actions=n_actions)
     exploration_eps = -1
     for ep in range(episodes):
-        s_curr = env.reset()
+        s_curr, _ = env.reset()
         s_curr = np.reshape(s_curr, (1, n_states))
         s_curr = s_curr.astype(np.float32)
         done = False
@@ -170,18 +198,21 @@ def main(episodes, exp_name):
                 a_curr = env.action_space.sample()
                 a_curr_tensor = torch.from_numpy(a_curr).unsqueeze(0)
             else:
-                a_curr_tensor, _ = agent.actor.get_action(s_curr_tensor.to(DEVICE), train=True)
+                a_curr_tensor, _ = agent.actor.get_action(
+                    s_curr_tensor.to(DEVICE), train=True
+                )
                 # this detach is necessary as the action tensor gets concatenated with state tensor when passed in to critic
                 # without this detach, each action tensor keeps its graph, and when same action gets sampled from buffer,
                 # it considers that graph "already processed" so it will throw an error
                 a_curr_tensor = a_curr_tensor.detach()
                 a_curr = a_curr_tensor.cpu().numpy().flatten()
-
-            s_next, r, done, _ = env.step(a_curr)
-
+            s_next, r, terminated, truncated, _ = env.step(a_curr)
+            done = terminated or truncated
             s_next = np.reshape(s_next, (1, n_states))
             s_next_tensor = torch.from_numpy(s_next)
-            sample = namedtuple('sample', ['s_curr', 'a_curr', 'reward', 's_next', 'done'])
+            sample = namedtuple(
+                "sample", ["s_curr", "a_curr", "reward", "s_next", "done"]
+            )
             if step == 500:
                 print("RAN FOR TOO LONG")
                 done = True
@@ -207,19 +238,22 @@ def main(episodes, exp_name):
             step += 1
             if done:
                 print(f"ep:{ep}:################Goal Reached###################", score)
-                with writer.as_default():
-                    tf.summary.scalar("reward", r, ep)
-                    tf.summary.scalar("score", score, ep)
+                writer.add_scalar("reward", r, ep)
+                writer.add_scalar("score", score, ep)
     return agent
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp_name", type=str, default="SAC_LunarLander_Score", help="exp_name")
-    ap.add_argument("--episodes", type=int, default=700, help="number of episodes to run")
+    ap.add_argument(
+        "--exp_name", type=str, default="SAC_LunarLander_Score", help="exp_name"
+    )
+    ap.add_argument(
+        "--episodes", type=int, default=700, help="number of episodes to run"
+    )
     args = vars(ap.parse_args())
     trained_agent = main(episodes=args["episodes"], exp_name=args["exp_name"])
-    if DEVICE == torch.device('cpu'):
+    if DEVICE == torch.device("cpu"):
         torch.save(trained_agent.actor, "policy_trained_on_cpu.pt")
     else:
         torch.save(trained_agent.actor, "policy_trained_on_gpu.pt")
